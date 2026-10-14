@@ -1,6 +1,5 @@
 """Terminal interface for the initial scaffold."""
 
-import os
 import sys
 import time
 from contextlib import aclosing
@@ -19,7 +18,8 @@ from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.text import Text
 
-from joy.llm import MODEL, ToolEvent, stream_reply
+from joy.config import Settings
+from joy.llm import ToolEvent, stream_reply
 
 
 def main() -> None:
@@ -27,8 +27,14 @@ def main() -> None:
         color_system="truecolor" if sys.stdout.isatty() else None,
         no_color=False,
     )
-    if not os.environ.get("OPENAI_API_KEY"):
-        console.print("[red]Set OPENAI_API_KEY in your environment before running joy.[/red]")
+    try:
+        settings = Settings.from_env()
+    except ValueError as error:
+        console.print(f"[red]{error}[/red]")
+        return
+    if not settings.api_key:
+        console.print("[red]Set OPENAI_API_KEY (or JOY_API_KEY) in your environment "
+                      "before running joy.[/red]")
         return
     history = [{
         "role": "system",
@@ -106,7 +112,7 @@ def main() -> None:
     async def finish_wait(messages: list[dict[str, str]]) -> None:
         nonlocal answer, tool_status, used_tools
         try:
-            async with aclosing(stream_reply(messages)) as stream:
+            async with aclosing(stream_reply(messages, settings)) as stream:
                 async for chunk in stream:
                     if isinstance(chunk, ToolEvent):
                         used_tools = True
@@ -119,7 +125,7 @@ def main() -> None:
             return
         session.app.exit(result=session.default_buffer.text)
 
-    console.print(f"[bold cyan]Joy[/bold cyan] — {MODEL}\n")
+    console.print(f"[bold cyan]Joy[/bold cyan] — {settings.model} ({settings.api})\n")
     console.print("Type /exit to exit. Ctrl-C cancels input; Ctrl-D exits.\n")
     console.print("[dim]Enter sends · Alt+Enter adds a new line[/dim]")
     while True:

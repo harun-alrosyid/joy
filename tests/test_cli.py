@@ -67,7 +67,7 @@ class CliTest(unittest.TestCase):
 
         requests = []
 
-        async def fake_reply(messages):
+        async def fake_reply(messages, settings=None):
             requests.append(messages)
             await original_sleep(0.02)
             if messages[-1]["content"] == "failed request":
