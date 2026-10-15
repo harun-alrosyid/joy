@@ -65,7 +65,7 @@ and retry or switch `JOY_MODEL` on `503`.
 
 - **Enter** — send a message once the current reply finishes.
 - **Alt+Enter** — insert a newline.
-- **Ctrl+C** — cancel input or the pending reply.
+- **Esc** — interrupt the pending reply.
 - **Ctrl+D** on empty input or **/exit** — exit.
 
 You can draft your next message while a reply streams. Conversation history lasts
@@ -79,6 +79,111 @@ Edit uses a unique text replacement with [Pi-style matching](https://github.com/
 exact text first, then Unicode punctuation and trailing-whitespace normalization.
 It preserves BOM/newline style, rejects ambiguous or unchanged replacements, and
 returns a diff. Joy accepts one replacement per call; Pi also supports batches.
+
+## Coding tools
+
+All file paths resolve inside Joy's launch directory. Path traversal, invalid
+paths, missing files, and directory targets are rejected. Symlinks are resolved
+before the workspace-boundary check. File content limits use encoded UTF-8 bytes:
+`MAX_FILE_SIZE = 2 * 1024 * 1024` (2 MiB).
+
+### `read`
+
+Reads UTF-8 text with preserved, 1-based line numbers. `start_line` and
+`end_line` are optional and inclusive. Compatibility aliases `offset` (1-based)
+and `limit` (1–2,000 lines) are also accepted.
+
+```json
+{"path":"src/main.py","start_line":1,"end_line":100}
+```
+
+Ranges outside the file, invalid encodings, files over 2 MiB, and directories
+are rejected. Empty files are handled without modification. A `Read failed`
+activity message includes the cause when available: check that the path exists
+inside Joy's launch directory, names a readable UTF-8 file, is at most 2 MiB,
+and that the requested range is valid.
+Tool responses are capped at 20,000 characters; request a smaller line range
+when reading a long file.
+
+### `write`
+
+Creates or overwrites a UTF-8 file, creating missing parent directories.
+
+```json
+{"path":"src/example.py","content":"print('Hello Joy')\n"}
+```
+
+Writes use a temporary file in the destination directory, flush and `fsync`,
+then atomic `os.replace`. Existing permissions are preserved. Failed or
+cancelled writes clean up temporary files and never leave partial targets.
+
+### `edit`
+
+Replaces exactly one unique text section in an existing file.
+
+```json
+{"path":"src/main.py","old_text":"print('Hello')","new_text":"print('Hello from Joy')"}
+```
+
+Missing files, empty or unmatched text, ambiguous matches, unchanged results,
+and oversized results are rejected. BOMs, newline conventions, permissions,
+and concurrent-modification safety are preserved. Changes use the same atomic
+replacement path as `write`.
+
+### `bash`
+
+Runs a command with `bash -c` in Joy's launch directory using the current user's
+permissions. It is not sandboxed. The default timeout is 30 seconds; callers
+may provide a timeout from 1 to 300 seconds.
+
+```json
+{"command":"python -m unittest discover -s tests","timeout":30}
+```
+
+Stdout and stderr are captured separately, output is bounded, and the result
+includes status, exit code, and duration. Nonzero exits are failures. Timeout
+or cancellation terminates the complete process group to avoid orphaned
+children.
+
+## Changes viewer
+
+Successful `write` and `edit` operations produce structured file-change records
+with operation, path, addition/deletion counts, and complete Git-style unified
+diffs. At completion, the terminal displays one combined changes viewer with a
+compact preview for every changed file and one global `Show details` / `Hide
+details` control. All diffs start collapsed; expanding shows every hunk for all
+files. Addition counts and lines are green; deletion counts and lines are red.
+Hunk headers are cyan/blue. The combined addition total is green and deletion
+total red.
+
+In an interactive terminal, Joy displays a collapsed diff preview before a
+`write` or `edit` is committed. Expand it to inspect the proposal. Choose
+`[y] Accept` or `[n] Reject` with the keyboard or click the control. The work
+timer pauses while waiting for approval. Rejected or interrupted proposals do
+not modify the file. Noninteractive calls keep automatic execution behavior.
+
+Expanded diffs show every unified-diff hunk and can be scrolled. In an
+interactive terminal:
+
+- `F4` focuses Activity and the File Changes viewer.
+- `Up` / `Down` moves through the changes.
+- `Enter` or `Space` toggles details for all changed files.
+- `Right` expands all diffs; `Left` collapses them.
+- `PageUp` / `PageDown` scrolls long expanded diffs.
+- `Esc` returns focus to chat input, or interrupts an active turn.
+- `Alt+M` toggles mouse controls. Turn them off to select/copy terminal text.
+
+Chat controls remain unchanged: Enter submits, Alt+Enter inserts a newline,
+Esc interrupts an active request, and Ctrl+D or `/exit` exits. When the
+diff viewer has focus, the first Esc returns focus to chat input.
+
+Joy shows elapsed working time and local finish time beneath the result. The
+elapsed timer pauses during change approval. Type `/keymap` to print shortcuts.
+
+Cancellation is checked before each tool and during long operations. Cancelled
+writes clean up temporary files; completed atomic changes remain committed.
+Subprocesses are terminated by process group. A later agent turn receives no
+stale output from a cancelled turn.
 
 ## Test
 

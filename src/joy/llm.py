@@ -3,6 +3,7 @@
 import asyncio
 import json
 import re
+import sys
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ from threading import Event, Thread
 from openai import OpenAI, APIConnectionError, APIStatusError, APITimeoutError
 
 from joy.config import Settings
-from joy.tools import create_tools
+from joy.tools import FileChange, create_tools
 
 MAX_STEPS = 16
 MAX_TOOL_CALLS = 8
@@ -23,6 +24,23 @@ MAX_TOOL_CALLS = 8
 class ToolEvent:
     name: str
     status: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class ChangeEvent:
+    change: FileChange
+
+
+@dataclass
+class ApprovalEvent:
+    change: FileChange
+    resolved: Event
+    approved: bool | None = None
+
+    def decide(self, approved: bool) -> None:
+        self.approved = approved
+        self.resolved.set()
 
 
 def _error_message(error: Exception, model: str) -> str:
@@ -68,8 +86,27 @@ def _tool_output(toolbox, name: str, arguments: str) -> tuple[str, str]:
     try:
         output = toolbox.execute({"function": {"name": name, "arguments": arguments}})[0]
         return output, "finished"
+    except InterruptedError as error:
+        return str(error), "cancelled"
     except Exception as error:
         return f"Tool error: {error}", "failed"
+
+
+def _tool_event_detail(output: str, status: str) -> str:
+    if status != "failed":
+        return ""
+    message = output.partition("\n")[0]
+    return re.sub(r"[\x00-\x1f\x7f]+", " ", message)[:180]
+
+
+def _tool_detail(name: str, arguments: str) -> str:
+    if name != "bash":
+        return ""
+    try:
+        command = json.loads(arguments).get("command", "").strip().replace("\n", " ")
+    except (TypeError, ValueError, AttributeError):
+        return ""
+    return command[:100] + ("..." if len(command) > 100 else "")
 
 
 def _run_responses(client: OpenAI, settings: Settings, conversation: list, toolbox,
@@ -111,9 +148,9 @@ def _run_responses(client: OpenAI, settings: Settings, conversation: list, toolb
         for call in calls:
             if cancelled.is_set():
                 return
-            result.put(ToolEvent(call.name, "running"))
+            result.put(ToolEvent(call.name, "running", _tool_detail(call.name, call.arguments)))
             output, status = _tool_output(toolbox, call.name, call.arguments)
-            result.put(ToolEvent(call.name, status))
+            result.put(ToolEvent(call.name, status, _tool_event_detail(output, status)))
             conversation.append({"type": "function_call_output", "call_id": call.call_id,
                                  "output": json.dumps(output)})
         if text:
@@ -172,9 +209,10 @@ def _run_chat(client: OpenAI, settings: Settings, conversation: list, toolbox,
             for call in ordered:
                 if cancelled.is_set():
                     return
-                result.put(ToolEvent(call["name"], "running"))
+                result.put(ToolEvent(call["name"], "running",
+                                     _tool_detail(call["name"], call["arguments"])))
                 output, status = _tool_output(toolbox, call["name"], call["arguments"])
-                result.put(ToolEvent(call["name"], status))
+                result.put(ToolEvent(call["name"], status, _tool_event_detail(output, status)))
                 conversation.append({"role": "tool", "tool_call_id": call["id"],
                                      "content": json.dumps(output)})
             if text:
@@ -190,7 +228,20 @@ def _request(settings: Settings, messages: list, cancelled: Event, result: Queue
     client = None
     try:
         client = OpenAI(**settings.client_kwargs())
-        toolbox = create_tools(Path.cwd(), cancelled)
+        def approve_change(change: FileChange) -> bool:
+            if not (sys.stdin.isatty() and sys.stdout.isatty()):
+                # ponytail: noninteractive callers cannot review; preserve prior headless behavior.
+                return True
+            approval = ApprovalEvent(change, Event())
+            result.put(approval)
+            while not approval.resolved.wait(0.05):
+                if cancelled.is_set():
+                    approval.decide(False)
+            return bool(approval.approved) and not cancelled.is_set()
+
+        toolbox = create_tools(Path.cwd(), cancelled,
+                               lambda change: result.put(ChangeEvent(change)),
+                               approve_change=approve_change)
         conversation = list(messages)
         runner = _run_responses if settings.is_responses else _run_chat
         runner(client, settings, conversation, toolbox, cancelled, result)
@@ -205,9 +256,9 @@ def _request(settings: Settings, messages: list, cancelled: Event, result: Queue
         result.put(None)
 
 
-async def stream_reply(messages: list[dict], settings: Settings | None = None) -> AsyncIterator[str | ToolEvent]:
+async def stream_reply(messages: list[dict], settings: Settings | None = None) -> AsyncIterator[str | ToolEvent | ChangeEvent | ApprovalEvent]:
     settings = settings or Settings.from_env()
-    result: Queue[str | ToolEvent | Exception | None] = Queue()
+    result: Queue[str | ToolEvent | ChangeEvent | ApprovalEvent | Exception | None] = Queue()
     cancelled = Event()
 
     # ponytail: cancelling discards the result; the sync request ends at its timeout.

@@ -39,7 +39,11 @@ class ToolsTest(unittest.TestCase):
                 return tools.execute({'function': {'name': name, 'arguments': json.dumps(arguments)}})[0]
 
             run('write', path='src/demo.py', content='print(“hello”)\n')
-            self.assertIn('1: print', run('read', path='src/demo.py'))
+            self.assertIn('  1 | print', run('read', path='src/demo.py'))
+            run('write', path='src/lines.txt', content='line one\nline two\n')
+            self.assertIn('  2 | line two', run('read', path='src/lines.txt', start_line=2, end_line=2))
+            with self.assertRaises(ValueError):
+                run('read', path='src/lines.txt', start_line=3, end_line=4)
             result = run('edit', path='src/demo.py', old_text='print("hello")', new_text='print("bye")')
             self.assertIn('+print("bye")', result)
             self.assertEqual((root / 'src/demo.py').read_text(), 'print("bye")\n')

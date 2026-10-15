@@ -110,10 +110,11 @@ class CliTest(unittest.TestCase):
         self.assertRegex(transcript, r"› hello\s+world")
         self.assertIn("[bold]literal[/bold]", transcript)
         self.assertEqual(transcript.count("› "), 4)
-        self.assertNotIn("Joy\n", transcript)
+        self.assertIn("Joy\n", transcript)
         self.assertIn("OpenAI unavailable.", transcript)
         self.assertIn("Partial reply before failure.", transcript)
         self.assertIn("Response cancelled.", transcript)
+        self.assertRegex(transcript, r"✓ Work finished in \d+\.\d+s · \d{2}:\d{2}:\d{2}")
         self.assertEqual(transcript.count("An actual assistant reply."), 2)
         self.assertEqual(defaults[6], "draft for later")
         self.assertEqual([m["role"] for m in requests[-1]], [

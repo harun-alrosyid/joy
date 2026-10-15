@@ -12,7 +12,8 @@ import httpx
 from openai import OpenAI
 
 from joy.config import CHAT, DEFAULT_MODEL, RESPONSES, Settings
-from joy.llm import ToolEvent, stream_reply
+from joy.llm import ChangeEvent, ToolEvent, _tool_event_detail, stream_reply
+from joy.tools import FileChange
 
 
 def sse(events):
@@ -45,6 +46,11 @@ async def collect_reply(messages, settings):
 
 
 class LlmTest(unittest.IsolatedAsyncioTestCase):
+    def test_tool_failure_event_exposes_bounded_reason(self):
+        detail = _tool_event_detail("Tool error: Permission denied\nprivate context", "failed")
+        self.assertEqual(detail, "Tool error: Permission denied")
+        self.assertEqual(_tool_event_detail("output", "finished"), "")
+
     def settings(self, api=RESPONSES, **overrides):
         values = {'api': api, 'model': DEFAULT_MODEL, 'api_key': 'test-key',
                   'base_url': 'https://api.openai.com/v1'}
@@ -96,7 +102,13 @@ class LlmTest(unittest.IsolatedAsyncioTestCase):
             with patch('joy.llm.Path.cwd', return_value=Path(directory)), self.client_patch(respond):
                 chunks = [part async for part in stream_reply(
                     [{'role': 'user', 'content': 'Create it'}], self.settings())]
-            self.assertEqual(chunks, [ToolEvent('write', 'running'), ToolEvent('write', 'finished'), 'Created it.'])
+            self.assertEqual(chunks, [
+                ToolEvent('write', 'running'),
+                ChangeEvent(FileChange('hello.txt', 'created', 1, 0,
+                                       '--- a/hello.txt\n+++ b/hello.txt\n'
+                                       '@@ -0,0 +1 @@\n+hello')),
+                ToolEvent('write', 'finished'), 'Created it.',
+            ])
             self.assertEqual((Path(directory) / 'hello.txt').read_text(), 'hello')
         self.assertEqual(len(payloads), 2)
 
@@ -138,7 +150,11 @@ class LlmTest(unittest.IsolatedAsyncioTestCase):
                 chunks = [part async for part in stream_reply(
                     [{'role': 'user', 'content': 'Create it'}], self.settings(api=CHAT))]
             self.assertEqual(chunks, [
-                'Working', ToolEvent('write', 'running'), ToolEvent('write', 'finished'),
+                'Working', ToolEvent('write', 'running'),
+                ChangeEvent(FileChange('hello.txt', 'created', 1, 0,
+                                       '--- a/hello.txt\n+++ b/hello.txt\n'
+                                       '@@ -0,0 +1 @@\n+hello')),
+                ToolEvent('write', 'finished'),
                 '\n\n', 'Created', ' it.',
             ])
             self.assertEqual((Path(directory) / 'hello.txt').read_text(), 'hello')
