@@ -24,7 +24,7 @@ from rich.padding import Padding
 from rich.text import Text
 
 from joy.config import Settings
-from joy.llm import ApprovalEvent, ChangeEvent, ToolEvent, stream_reply
+from joy.llm import ChangeEvent, ToolEvent, stream_reply
 
 
 class DiffViewer:
@@ -187,8 +187,7 @@ def _viewer_text(state: dict, width: int, height: int,
                 return None
         return handle
 
-    prompt = _approval_prompt(state)
-    content_height = max(1, height - (1 if prompt else 0))
+    content_height = max(1, height)
     # FormattedTextControl concatenates fragments; terminate each row explicitly.
     formatted = []
     for style, text, index in viewer._rows(width, content_height, include_toggle):
@@ -202,7 +201,6 @@ def _viewer_text(state: dict, width: int, height: int,
         else:
             style = f"class:{style}" if style in {"diff-add", "diff-remove", "diff-context"} else style
             formatted.append((style, text + "\n", handler))
-    formatted.extend(prompt)
     return formatted
 
 
@@ -246,49 +244,6 @@ def _work_elapsed(state: dict) -> float:
     return elapsed + (time.monotonic() - started if started is not None else 0.0)
 
 
-def _pause_work(state: dict) -> None:
-    if state.get("segment_started_at") is not None:
-        state["elapsed_seconds"] = _work_elapsed(state)
-        state["segment_started_at"] = None
-
-
-def _resume_work(state: dict) -> None:
-    if state.get("segment_started_at") is None:
-        state["segment_started_at"] = time.monotonic()
-
-
-def _approve_pending(state: dict, approved: bool) -> None:
-    approval = state.get("approval")
-    if approval is None:
-        return
-    if not approved:
-        proposal = state.get("proposal")
-        state["viewer"].changes[:] = [change for change in state["viewer"].changes
-                                      if change is not proposal]
-        state["viewer"].invalidate()
-        state["proposal"] = None
-    state["approval"] = None
-    approval.decide(approved)
-    _resume_work(state)
-
-
-def _approval_prompt(state: dict) -> list[tuple]:
-    approval = state.get("approval")
-    if approval is None:
-        return []
-
-    def button(label: str, decision: bool, style: str):
-        def click(mouse_event):
-            if mouse_event.event_type == MouseEventType.MOUSE_UP:
-                _approve_pending(state, decision)
-                get_app().invalidate()
-        return style, label, click
-
-    return [("", f"Apply changes to {approval.change.path}? "),
-            button("[y] Accept", True, "class:diff-add"),
-            ("", "   "), button("[n] Reject", False, "class:diff-remove")]
-
-
 def _show_keymap(console: Console) -> None:
     console.print("[bold]Keymap[/bold]")
     for key, action in (
@@ -300,7 +255,6 @@ def _show_keymap(console: Console) -> None:
         ("Up / Down", "Navigate file changes"),
         ("Right / Left", "Expand / collapse all diffs"),
         ("PageUp / PageDown", "Scroll expanded diff"),
-        ("y / n", "Accept / reject proposed file change"),
         ("Alt+Enter", "Insert newline"),
         ("Ctrl+D", "Exit on empty input"),
         ("/exit", "Exit Joy"),
@@ -315,28 +269,9 @@ async def _consume(messages, settings, state, session):
             async for chunk in stream:
                 if isinstance(chunk, ChangeEvent):
                     state["changes"].append(chunk.change)
-                    if state.get("proposal") is chunk.change:
-                        state["proposal"] = None
-                        state["approval"] = None
-                    else:
-                        state["viewer"].add_change(chunk.change)
-                elif isinstance(chunk, ApprovalEvent):
-                    _pause_work(state)
-                    state["approval"] = chunk
-                    state["proposal"] = chunk.change
                     state["viewer"].add_change(chunk.change)
-                    state["viewer"].focus = len(state["viewer"].changes) - 1
-                    state["viewer_focus"] = True
-                    session.app.layout.focus(state["viewer_window"])
                 elif isinstance(chunk, ToolEvent):
                     state["tool"] = _tool_status(chunk.name, chunk.status, chunk.detail)
-                    if chunk.status in {"failed", "cancelled"} and state.get("proposal") is not None:
-                        proposal = state["proposal"]
-                        state["viewer"].changes[:] = [change for change in state["viewer"].changes
-                                                      if change is not proposal]
-                        state["viewer"].invalidate()
-                        state["proposal"] = None
-                        state["approval"] = None
                 else:
                     state["answer"] += chunk
                 session.app.invalidate()
@@ -348,7 +283,6 @@ async def _consume(messages, settings, state, session):
         state["done"] = True
         if state.get("viewer") is not None:
             state["viewer"].invalidate()
-        _pause_work(state)
         if state.get("work_started_at") is not None:
             elapsed = _work_elapsed(state)
             ended_at = datetime.now().strftime("%H:%M:%S")
@@ -393,7 +327,7 @@ def main() -> None:
     bindings = KeyBindings()
     state = {"pending": False, "answer": "", "tool": "", "error": "", "done": False,
              "cancelled": False, "changes": [], "viewer": None, "viewer_focus": False,
-             "approval": None, "proposal": None, "viewer_window": None,
+             "viewer_window": None,
              "work_started_at": None, "segment_started_at": None,
              "elapsed_seconds": 0.0, "finished_status": "", "mouse_enabled": True}
     active: asyncio.Task | None = None
@@ -413,16 +347,6 @@ def main() -> None:
             event.app.invalidate()
         else:
             event.current_buffer.insert_text(" ")
-
-    @bindings.add("y", filter=Condition(lambda: state["approval"] is not None))
-    def accept_change(event: KeyPressEvent) -> None:
-        _approve_pending(state, True)
-        event.app.invalidate()
-
-    @bindings.add("n", filter=Condition(lambda: state["approval"] is not None))
-    def reject_change(event: KeyPressEvent) -> None:
-        _approve_pending(state, False)
-        event.app.invalidate()
 
     @bindings.add("escape", "enter")
     def newline(event: KeyPressEvent) -> None:
@@ -448,12 +372,7 @@ def main() -> None:
 
     @bindings.add("escape")
     def leave_changes(event: KeyPressEvent) -> None:
-        if state["approval"] is not None:
-            _approve_pending(state, False)
-            state["viewer_focus"] = False
-            event.app.layout.focus(input_window)
-            event.app.invalidate()
-        elif state["viewer_focus"]:
+        if state["viewer_focus"]:
             state["viewer_focus"] = False
             event.app.layout.focus(input_window)
             event.app.invalidate()
@@ -583,8 +502,7 @@ def main() -> None:
             filter=Condition(lambda: state["pending"] and bool(state["answer"])),
         ),
         ConditionalContainer(viewer_container,
-                              filter=Condition(lambda: state["approval"] is not None or
-                                               (state["done"] and bool(state["changes"]))),
+                              filter=Condition(lambda: state["done"] and bool(state["changes"])),
         ),
         ConditionalContainer(Window(FormattedTextControl(status), height=Dimension.exact(1)),
                               filter=Condition(lambda: state["pending"] or
@@ -616,7 +534,7 @@ def main() -> None:
                               style="white on #393939"))
         state.update(pending=True, answer="", tool="", error="", done=False,
                      cancelled=False, changes=[], viewer_focus=False,
-                     approval=None, proposal=None, work_started_at=None,
+                     work_started_at=None,
                      segment_started_at=None, elapsed_seconds=0.0, finished_status="")
         state["viewer"] = DiffViewer([])
         messages = [*history, {"role": "user", "content": message}]
@@ -631,6 +549,11 @@ def main() -> None:
 
         try:
             draft = session.prompt("› ", default=draft, pre_run=start) or ""
+        except EOFError:
+            state["cancelled"] = True
+            if active:
+                active.cancel()
+            break
         except KeyboardInterrupt:
             state["cancelled"] = True
             if active:

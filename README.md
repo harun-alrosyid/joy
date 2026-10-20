@@ -156,11 +156,8 @@ files. Addition counts and lines are green; deletion counts and lines are red.
 Hunk headers are cyan/blue. The combined addition total is green and deletion
 total red.
 
-In an interactive terminal, Joy displays a collapsed diff preview before a
-`write` or `edit` is committed. Expand it to inspect the proposal. Choose
-`[y] Accept` or `[n] Reject` with the keyboard or click the control. The work
-timer pauses while waiting for approval. Rejected or interrupted proposals do
-not modify the file. Noninteractive calls keep automatic execution behavior.
+In an interactive terminal, Joy displays a collapsed diff after each `write`
+or `edit` is committed. Expand it to inspect the changes.
 
 Expanded diffs show every unified-diff hunk and can be scrolled. In an
 interactive terminal:
@@ -178,7 +175,7 @@ Esc interrupts an active request, and Ctrl+D or `/exit` exits. When the
 diff viewer has focus, the first Esc returns focus to chat input.
 
 Joy shows elapsed working time and local finish time beneath the result. The
-elapsed timer pauses during change approval. Type `/keymap` to print shortcuts.
+Type `/keymap` to print shortcuts.
 
 Cancellation is checked before each tool and during long operations. Cancelled
 writes clean up temporary files; completed atomic changes remain committed.

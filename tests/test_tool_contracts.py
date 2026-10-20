@@ -48,35 +48,6 @@ class ToolContractTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.call("write", path="too-big", content="x" * (MAX_FILE_SIZE + 1))
 
-    def test_write_approval_precedes_commit_and_record(self):
-        seen = []
-        tools = create_tools(self.root, Event(), seen.append, approve_change=lambda change: False)
-        with self.assertRaises(InterruptedError):
-            tools.execute({"function": {"name": "write", "arguments": json.dumps({
-                "path": "rejected.txt", "content": "proposed",
-            })}})
-        self.assertFalse((self.root / "rejected.txt").exists())
-        self.assertEqual(seen, [])
-
-        tools = create_tools(self.root, Event(), seen.append, approve_change=lambda change: True)
-        tools.execute({"function": {"name": "write", "arguments": json.dumps({
-            "path": "accepted.txt", "content": "approved",
-        })}})
-        self.assertEqual((self.root / "accepted.txt").read_text(), "approved")
-        self.assertEqual([change.path for change in seen], ["accepted.txt"])
-
-    def test_edit_rejection_preserves_original(self):
-        path = self.root / "existing.txt"
-        path.write_text("before\n")
-        seen = []
-        tools = create_tools(self.root, Event(), seen.append, approve_change=lambda change: False)
-        with self.assertRaises(InterruptedError):
-            tools.execute({"function": {"name": "edit", "arguments": json.dumps({
-                "path": "existing.txt", "old_text": "before", "new_text": "after",
-            })}})
-        self.assertEqual(path.read_text(), "before\n")
-        self.assertEqual(seen, [])
-
     def test_edit_matching_and_bom_newline_preservation(self):
         path = self.root / "file.py"
         path.write_bytes(b"\xef\xbb\xbfold\r\n")

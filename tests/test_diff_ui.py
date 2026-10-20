@@ -1,11 +1,8 @@
 import unittest
 from types import SimpleNamespace
-from threading import Event
 from unittest.mock import patch
 
-from joy.cli import (DiffViewer, _pause_work, _resume_work, _show_changes,
-                     _tool_status, _viewer_text, _work_elapsed)
-from joy.llm import ApprovalEvent
+from joy.cli import DiffViewer, _show_changes, _tool_status
 from prompt_toolkit.mouse_events import MouseEventType
 from joy.tools import FileChange
 
@@ -21,38 +18,10 @@ class FakeConsole:
 
 
 class DiffSummaryTest(unittest.TestCase):
-    def test_work_timer_pauses_for_approval(self):
-        state = {"elapsed_seconds": 0.0, "segment_started_at": 100.0}
-        with patch("joy.cli.time.monotonic", return_value=104.0):
-            _pause_work(state)
-            self.assertEqual(_work_elapsed(state), 4.0)
-        with patch("joy.cli.time.monotonic", return_value=150.0):
-            _resume_work(state)
-        with patch("joy.cli.time.monotonic", return_value=152.0):
-            self.assertEqual(_work_elapsed(state), 6.0)
-
     def test_failed_tool_status_shows_read_error_reason(self):
         text = _tool_status("read", "failed", "Tool error: Cannot read file: Permission denied")
         self.assertIn("Reading failed", text)
         self.assertIn("Permission denied", text)
-
-    def test_approval_prompt_plain_fragments_have_no_mouse_handler(self):
-        diff = "@@ -0,0 +1,8 @@\n" + "\n".join(f"+line{i}" for i in range(8))
-        change = FileChange("a.py", "edited", 8, 0, diff)
-        state = {
-            "viewer": DiffViewer([change]),
-            "approval": ApprovalEvent(change, Event()),
-        }
-
-        fragments = _viewer_text(state, 80, 20)
-
-        self.assertTrue(any(len(fragment) == 2 and "Apply changes" in fragment[1]
-                            for fragment in fragments))
-        text = "".join(fragment[1] for fragment in fragments)
-        self.assertIn("+ Show details", text)
-        self.assertNotIn("− Hide details", text)
-        self.assertTrue(all(len(fragment) != 3 or callable(fragment[2])
-                            for fragment in fragments))
 
     def test_header_counts_and_compact_preview(self):
         viewer = DiffViewer([FileChange("src/main.py", "edited", 2, 1,

@@ -7,3 +7,5 @@ build/
 .env
 .DS_Store
 /file-tests
+/src/joy/python3.13 -m venv .venv
+/docs/panduan-tui.md

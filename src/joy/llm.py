@@ -3,7 +3,6 @@
 import asyncio
 import json
 import re
-import sys
 from collections.abc import AsyncIterator
 from contextlib import suppress
 from dataclasses import dataclass
@@ -30,17 +29,6 @@ class ToolEvent:
 @dataclass(frozen=True)
 class ChangeEvent:
     change: FileChange
-
-
-@dataclass
-class ApprovalEvent:
-    change: FileChange
-    resolved: Event
-    approved: bool | None = None
-
-    def decide(self, approved: bool) -> None:
-        self.approved = approved
-        self.resolved.set()
 
 
 def _error_message(error: Exception, model: str) -> str:
@@ -228,20 +216,8 @@ def _request(settings: Settings, messages: list, cancelled: Event, result: Queue
     client = None
     try:
         client = OpenAI(**settings.client_kwargs())
-        def approve_change(change: FileChange) -> bool:
-            if not (sys.stdin.isatty() and sys.stdout.isatty()):
-                # ponytail: noninteractive callers cannot review; preserve prior headless behavior.
-                return True
-            approval = ApprovalEvent(change, Event())
-            result.put(approval)
-            while not approval.resolved.wait(0.05):
-                if cancelled.is_set():
-                    approval.decide(False)
-            return bool(approval.approved) and not cancelled.is_set()
-
         toolbox = create_tools(Path.cwd(), cancelled,
-                               lambda change: result.put(ChangeEvent(change)),
-                               approve_change=approve_change)
+                               lambda change: result.put(ChangeEvent(change)))
         conversation = list(messages)
         runner = _run_responses if settings.is_responses else _run_chat
         runner(client, settings, conversation, toolbox, cancelled, result)
@@ -256,9 +232,9 @@ def _request(settings: Settings, messages: list, cancelled: Event, result: Queue
         result.put(None)
 
 
-async def stream_reply(messages: list[dict], settings: Settings | None = None) -> AsyncIterator[str | ToolEvent | ChangeEvent | ApprovalEvent]:
+async def stream_reply(messages: list[dict], settings: Settings | None = None) -> AsyncIterator[str | ToolEvent | ChangeEvent]:
     settings = settings or Settings.from_env()
-    result: Queue[str | ToolEvent | ChangeEvent | ApprovalEvent | Exception | None] = Queue()
+    result: Queue[str | ToolEvent | ChangeEvent | Exception | None] = Queue()
     cancelled = Event()
 
     # ponytail: cancelling discards the result; the sync request ends at its timeout.

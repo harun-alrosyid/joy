@@ -119,8 +119,7 @@ def _save(path: Path, content: str, cancelled: Event | None = None) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def create_tools(workspace: Path, cancelled: Event, on_change=None,
-                 approve_change=None) -> Tools:
+def create_tools(workspace: Path, cancelled: Event, on_change=None) -> Tools:
     root = workspace.resolve()
 
     def resolve(path: str) -> Path:
@@ -203,15 +202,8 @@ def create_tools(workspace: Path, cancelled: Event, on_change=None,
             original_bytes = target.read_bytes() if existed else None
             original = original_bytes.decode("utf-8") if original_bytes is not None else ""
             change = build_file_change(path, "overwritten" if existed else "created", original, content)
-            if approve_change and not approve_change(change):
-                raise InterruptedError("Change rejected by user.")
             if cancelled.is_set():
                 raise InterruptedError("Cancelled.")
-            if existed:
-                if target.read_bytes() != original_bytes:
-                    raise ValueError("File changed while awaiting approval. Read it and retry.")
-            elif target.exists():
-                raise ValueError("File was created while awaiting approval. Read it and retry.")
             _save(target, content, cancelled)
         if on_change and change.additions + change.deletions:
             on_change(change)
@@ -252,13 +244,6 @@ def create_tools(workspace: Path, cancelled: Event, on_change=None,
             except OSError as error:
                 raise ValueError(f"Cannot verify file before editing: {error.strerror or error}") from error
             change = build_file_change(path, "edited", original, updated)
-            if approve_change and not approve_change(change):
-                raise InterruptedError("Change rejected by user.")
-            try:
-                if target.read_bytes() != original_bytes:
-                    raise ValueError("File changed while awaiting approval. Read it and retry.")
-            except OSError as error:
-                raise ValueError(f"Cannot verify file before editing: {error.strerror or error}") from error
             _save(target, updated, cancelled)
         if on_change:
             on_change(change)
